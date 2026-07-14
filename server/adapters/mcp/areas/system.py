@@ -1,0 +1,806 @@
+from typing import Any, Dict, Literal, Optional
+
+from fastmcp import Context
+
+from server.adapters.mcp.context_utils import ctx_info
+from server.adapters.mcp.router_helper import route_tool_call
+from server.adapters.mcp.tasks.candidacy import get_tool_task_config
+from server.adapters.mcp.tasks.task_bridge import (
+    is_background_task_context,
+    run_rpc_background_job,
+)
+from server.adapters.mcp.visibility.tags import get_capability_tags
+from server.infrastructure.di import get_system_handler
+
+SYSTEM_PUBLIC_TOOL_NAMES = (
+    "export_glb",
+    "export_fbx",
+    "export_obj",
+    "import_obj",
+    "import_fbx",
+    "import_glb",
+    "import_image_as_plane",
+    "system_set_mode",
+    "system_undo",
+    "system_redo",
+    "system_save_file",
+    "system_new_file",
+    "system_snapshot",
+)
+
+
+def register_system_tools(target: Any) -> Dict[str, Any]:
+    """Register public system tools on a FastMCP server or LocalProvider."""
+
+    registered: Dict[str, Any] = {}
+    tag_set = set(get_capability_tags("system"))
+
+    for tool_name in SYSTEM_PUBLIC_TOOL_NAMES:
+        tool = globals()[tool_name]
+        fn = getattr(tool, "fn", tool)
+        kwargs: Dict[str, Any] = {"name": tool_name, "tags": set(tag_set)}
+        task_config = get_tool_task_config(tool_name)
+        if task_config is not None:
+            kwargs["task"] = task_config
+        registered[tool_name] = target.tool(fn, **kwargs)
+
+    return registered
+
+
+def _format_background_string_payload(payload: Any) -> str:
+    """Validate the background payload shape for system file operations."""
+
+    if not isinstance(payload, str):
+        raise RuntimeError("Background system task returned an invalid payload")
+    return payload
+
+
+# === Export Tools ===
+
+
+async def export_glb(
+    ctx: Context,
+    filepath: str,
+    export_selected: bool = False,
+    export_animations: bool = True,
+    export_materials: bool = True,
+    apply_modifiers: bool = True,
+) -> str:
+    """
+    [OBJECT MODE][SCENE][SAFE] Exports scene or selected objects to GLB/GLTF format.
+
+    GLB is the binary variant of GLTF - ideal for web, game engines (Unity, Unreal, Godot).
+    Supports PBR materials, animations, and skeletal rigs.
+
+    Workflow: BEFORE -> scene_list_objects (verify objects) | AFTER -> file ready for import
+
+    Args:
+        filepath: Output file path (must end with .glb or .gltf)
+        export_selected: Export only selected objects (default: entire scene)
+        export_animations: Include animations
+        export_materials: Include materials and textures
+        apply_modifiers: Apply modifiers before export
+    """
+    if is_background_task_context(ctx):
+
+        def _foreground_rpc() -> str:
+            return get_system_handler().export_glb(
+                filepath=filepath,
+                export_selected=export_selected,
+                export_animations=export_animations,
+                export_materials=export_materials,
+                apply_modifiers=apply_modifiers,
+            )
+
+        result = await run_rpc_background_job(
+            ctx,
+            tool_name="export_glb",
+            rpc_cmd="export.glb",
+            rpc_args={
+                "filepath": filepath,
+                "export_selected": export_selected,
+                "export_animations": export_animations,
+                "export_materials": export_materials,
+                "apply_modifiers": apply_modifiers,
+            },
+            foreground_executor=_foreground_rpc,
+            result_formatter=_format_background_string_payload,
+            start_message=f"Launching GLB export to '{filepath}'",
+            completion_message=f"Completed GLB export to '{filepath}'",
+        )
+        ctx_info(ctx, f"Exported GLB to: {filepath}")
+        return result
+
+    def execute():
+        handler = get_system_handler()
+        try:
+            result = handler.export_glb(
+                filepath=filepath,
+                export_selected=export_selected,
+                export_animations=export_animations,
+                export_materials=export_materials,
+                apply_modifiers=apply_modifiers,
+            )
+            ctx_info(ctx, f"Exported GLB to: {filepath}")
+            return result
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(
+        tool_name="export_glb",
+        params={
+            "filepath": filepath,
+            "export_selected": export_selected,
+            "export_animations": export_animations,
+            "export_materials": export_materials,
+            "apply_modifiers": apply_modifiers,
+        },
+        direct_executor=execute,
+    )
+
+
+async def export_fbx(
+    ctx: Context,
+    filepath: str,
+    export_selected: bool = False,
+    export_animations: bool = True,
+    apply_modifiers: bool = True,
+    mesh_smooth_type: Literal["OFF", "FACE", "EDGE"] = "FACE",
+) -> str:
+    """
+    [OBJECT MODE][SCENE][SAFE] Exports scene or selected objects to FBX format.
+
+    FBX is the industry standard for game engines and DCC interchange.
+    Supports animations, armatures, blend shapes, and materials.
+
+    Workflow: BEFORE -> scene_list_objects (verify objects) | AFTER -> file ready for import
+
+    Args:
+        filepath: Output file path (must end with .fbx)
+        export_selected: Export only selected objects
+        export_animations: Include animations and armature
+        apply_modifiers: Apply modifiers before export
+        mesh_smooth_type: Smoothing export method (OFF, FACE, EDGE)
+    """
+    if is_background_task_context(ctx):
+
+        def _foreground_rpc() -> str:
+            return get_system_handler().export_fbx(
+                filepath=filepath,
+                export_selected=export_selected,
+                export_animations=export_animations,
+                apply_modifiers=apply_modifiers,
+                mesh_smooth_type=mesh_smooth_type,
+            )
+
+        result = await run_rpc_background_job(
+            ctx,
+            tool_name="export_fbx",
+            rpc_cmd="export.fbx",
+            rpc_args={
+                "filepath": filepath,
+                "export_selected": export_selected,
+                "export_animations": export_animations,
+                "apply_modifiers": apply_modifiers,
+                "mesh_smooth_type": mesh_smooth_type,
+            },
+            foreground_executor=_foreground_rpc,
+            result_formatter=_format_background_string_payload,
+            start_message=f"Launching FBX export to '{filepath}'",
+            completion_message=f"Completed FBX export to '{filepath}'",
+        )
+        ctx_info(ctx, f"Exported FBX to: {filepath}")
+        return result
+
+    def execute():
+        handler = get_system_handler()
+        try:
+            result = handler.export_fbx(
+                filepath=filepath,
+                export_selected=export_selected,
+                export_animations=export_animations,
+                apply_modifiers=apply_modifiers,
+                mesh_smooth_type=mesh_smooth_type,
+            )
+            ctx_info(ctx, f"Exported FBX to: {filepath}")
+            return result
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(
+        tool_name="export_fbx",
+        params={
+            "filepath": filepath,
+            "export_selected": export_selected,
+            "export_animations": export_animations,
+            "apply_modifiers": apply_modifiers,
+            "mesh_smooth_type": mesh_smooth_type,
+        },
+        direct_executor=execute,
+    )
+
+
+async def export_obj(
+    ctx: Context,
+    filepath: str,
+    export_selected: bool = False,
+    apply_modifiers: bool = True,
+    export_materials: bool = True,
+    export_uvs: bool = True,
+    export_normals: bool = True,
+    triangulate: bool = False,
+) -> str:
+    """
+    [OBJECT MODE][SCENE][SAFE] Exports scene or selected objects to OBJ format.
+
+    OBJ is a simple, universal mesh format supported by virtually all 3D software.
+    Creates .obj (geometry) and optionally .mtl (materials) files.
+
+    Workflow: BEFORE -> scene_list_objects (verify objects) | AFTER -> file ready for import
+
+    Args:
+        filepath: Output file path (must end with .obj)
+        export_selected: Export only selected objects
+        apply_modifiers: Apply modifiers before export
+        export_materials: Export .mtl material file
+        export_uvs: Include UV coordinates
+        export_normals: Include vertex normals
+        triangulate: Convert quads/ngons to triangles
+    """
+    if is_background_task_context(ctx):
+
+        def _foreground_rpc() -> str:
+            return get_system_handler().export_obj(
+                filepath=filepath,
+                export_selected=export_selected,
+                apply_modifiers=apply_modifiers,
+                export_materials=export_materials,
+                export_uvs=export_uvs,
+                export_normals=export_normals,
+                triangulate=triangulate,
+            )
+
+        result = await run_rpc_background_job(
+            ctx,
+            tool_name="export_obj",
+            rpc_cmd="export.obj",
+            rpc_args={
+                "filepath": filepath,
+                "export_selected": export_selected,
+                "apply_modifiers": apply_modifiers,
+                "export_materials": export_materials,
+                "export_uvs": export_uvs,
+                "export_normals": export_normals,
+                "triangulate": triangulate,
+            },
+            foreground_executor=_foreground_rpc,
+            result_formatter=_format_background_string_payload,
+            start_message=f"Launching OBJ export to '{filepath}'",
+            completion_message=f"Completed OBJ export to '{filepath}'",
+        )
+        ctx_info(ctx, f"Exported OBJ to: {filepath}")
+        return result
+
+    def execute():
+        handler = get_system_handler()
+        try:
+            result = handler.export_obj(
+                filepath=filepath,
+                export_selected=export_selected,
+                apply_modifiers=apply_modifiers,
+                export_materials=export_materials,
+                export_uvs=export_uvs,
+                export_normals=export_normals,
+                triangulate=triangulate,
+            )
+            ctx_info(ctx, f"Exported OBJ to: {filepath}")
+            return result
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(
+        tool_name="export_obj",
+        params={
+            "filepath": filepath,
+            "export_selected": export_selected,
+            "apply_modifiers": apply_modifiers,
+            "export_materials": export_materials,
+            "export_uvs": export_uvs,
+            "export_normals": export_normals,
+            "triangulate": triangulate,
+        },
+        direct_executor=execute,
+    )
+
+
+# === Import Tools ===
+
+
+async def import_obj(
+    ctx: Context,
+    filepath: str,
+    use_split_objects: bool = True,
+    use_split_groups: bool = False,
+    global_scale: float = 1.0,
+    forward_axis: Literal["NEGATIVE_Z", "Z", "NEGATIVE_Y", "Y", "NEGATIVE_X", "X"] = "NEGATIVE_Z",
+    up_axis: Literal["Y", "Z", "X"] = "Y",
+) -> str:
+    """
+    [OBJECT MODE][SCENE] Imports OBJ file into the scene.
+
+    OBJ is the most universal 3D format - supported by virtually all 3D software.
+    Imports geometry, UVs, normals, and optionally materials from .mtl file.
+
+    Workflow: AFTER -> mesh_tris_to_quads (if triangulated) | mesh_normals_make_consistent
+
+    Args:
+        filepath: Path to OBJ file (must exist on Blender host)
+        use_split_objects: Split by object - creates separate Blender objects (default: True)
+        use_split_groups: Split by group names
+        global_scale: Scale factor for imported geometry (1.0 = original size)
+        forward_axis: Forward axis in Blender (NEGATIVE_Z = -Z forward, standard for most apps)
+        up_axis: Up axis in Blender (Y = Y-up standard)
+    """
+    if is_background_task_context(ctx):
+
+        def _foreground_rpc() -> str:
+            return get_system_handler().import_obj(
+                filepath=filepath,
+                use_split_objects=use_split_objects,
+                use_split_groups=use_split_groups,
+                global_scale=global_scale,
+                forward_axis=forward_axis,
+                up_axis=up_axis,
+            )
+
+        result = await run_rpc_background_job(
+            ctx,
+            tool_name="import_obj",
+            rpc_cmd="import.obj",
+            rpc_args={
+                "filepath": filepath,
+                "use_split_objects": use_split_objects,
+                "use_split_groups": use_split_groups,
+                "global_scale": global_scale,
+                "forward_axis": forward_axis,
+                "up_axis": up_axis,
+            },
+            foreground_executor=_foreground_rpc,
+            result_formatter=_format_background_string_payload,
+            start_message=f"Launching OBJ import from '{filepath}'",
+            completion_message=f"Completed OBJ import from '{filepath}'",
+        )
+        ctx_info(ctx, f"Imported OBJ from: {filepath}")
+        return result
+
+    def execute():
+        handler = get_system_handler()
+        try:
+            result = handler.import_obj(
+                filepath=filepath,
+                use_split_objects=use_split_objects,
+                use_split_groups=use_split_groups,
+                global_scale=global_scale,
+                forward_axis=forward_axis,
+                up_axis=up_axis,
+            )
+            ctx_info(ctx, f"Imported OBJ from: {filepath}")
+            return result
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(
+        tool_name="import_obj",
+        params={
+            "filepath": filepath,
+            "use_split_objects": use_split_objects,
+            "use_split_groups": use_split_groups,
+            "global_scale": global_scale,
+            "forward_axis": forward_axis,
+            "up_axis": up_axis,
+        },
+        direct_executor=execute,
+    )
+
+
+async def import_fbx(
+    ctx: Context,
+    filepath: str,
+    use_custom_normals: bool = True,
+    use_image_search: bool = True,
+    ignore_leaf_bones: bool = False,
+    automatic_bone_orientation: bool = False,
+    global_scale: float = 1.0,
+) -> str:
+    """
+    [OBJECT MODE][SCENE] Imports FBX file into the scene.
+
+    FBX is the industry standard for game engines (Unity, Unreal).
+    Supports geometry, materials, animations, armatures, and blend shapes.
+
+    Workflow: AFTER -> scene_list_objects (verify imported objects)
+
+    Args:
+        filepath: Path to FBX file (must exist on Blender host)
+        use_custom_normals: Use custom normals from file (preserves author's normals)
+        use_image_search: Search for texture images in file path
+        ignore_leaf_bones: Ignore leaf bones (tip bones) - cleaner armature import
+        automatic_bone_orientation: Auto-orient bones to Blender conventions
+        global_scale: Scale factor for imported geometry (1.0 = original size)
+    """
+    if is_background_task_context(ctx):
+
+        def _foreground_rpc() -> str:
+            return get_system_handler().import_fbx(
+                filepath=filepath,
+                use_custom_normals=use_custom_normals,
+                use_image_search=use_image_search,
+                ignore_leaf_bones=ignore_leaf_bones,
+                automatic_bone_orientation=automatic_bone_orientation,
+                global_scale=global_scale,
+            )
+
+        result = await run_rpc_background_job(
+            ctx,
+            tool_name="import_fbx",
+            rpc_cmd="import.fbx",
+            rpc_args={
+                "filepath": filepath,
+                "use_custom_normals": use_custom_normals,
+                "use_image_search": use_image_search,
+                "ignore_leaf_bones": ignore_leaf_bones,
+                "automatic_bone_orientation": automatic_bone_orientation,
+                "global_scale": global_scale,
+            },
+            foreground_executor=_foreground_rpc,
+            result_formatter=_format_background_string_payload,
+            start_message=f"Launching FBX import from '{filepath}'",
+            completion_message=f"Completed FBX import from '{filepath}'",
+        )
+        ctx_info(ctx, f"Imported FBX from: {filepath}")
+        return result
+
+    def execute():
+        handler = get_system_handler()
+        try:
+            result = handler.import_fbx(
+                filepath=filepath,
+                use_custom_normals=use_custom_normals,
+                use_image_search=use_image_search,
+                ignore_leaf_bones=ignore_leaf_bones,
+                automatic_bone_orientation=automatic_bone_orientation,
+                global_scale=global_scale,
+            )
+            ctx_info(ctx, f"Imported FBX from: {filepath}")
+            return result
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(
+        tool_name="import_fbx",
+        params={
+            "filepath": filepath,
+            "use_custom_normals": use_custom_normals,
+            "use_image_search": use_image_search,
+            "ignore_leaf_bones": ignore_leaf_bones,
+            "automatic_bone_orientation": automatic_bone_orientation,
+            "global_scale": global_scale,
+        },
+        direct_executor=execute,
+    )
+
+
+async def import_glb(
+    ctx: Context,
+    filepath: str,
+    import_pack_images: bool = True,
+    merge_vertices: bool = False,
+    import_shading: Literal["NORMALS", "FLAT", "SMOOTH"] = "NORMALS",
+) -> str:
+    """
+    [OBJECT MODE][SCENE] Imports GLB/GLTF file into the scene.
+
+    GLTF is the modern web/game format - supports PBR materials, animations, and more.
+    GLB is the binary variant (single file with embedded textures).
+
+    Workflow: AFTER -> scene_list_objects (verify imported objects)
+
+    Args:
+        filepath: Path to GLB/GLTF file (must exist on Blender host)
+        import_pack_images: Pack images into .blend file (keeps textures internal)
+        merge_vertices: Merge duplicate vertices (may break UV seams)
+        import_shading: How to handle shading (NORMALS = use file normals, FLAT, SMOOTH)
+    """
+    if is_background_task_context(ctx):
+
+        def _foreground_rpc() -> str:
+            return get_system_handler().import_glb(
+                filepath=filepath,
+                import_pack_images=import_pack_images,
+                merge_vertices=merge_vertices,
+                import_shading=import_shading,
+            )
+
+        result = await run_rpc_background_job(
+            ctx,
+            tool_name="import_glb",
+            rpc_cmd="import.glb",
+            rpc_args={
+                "filepath": filepath,
+                "import_pack_images": import_pack_images,
+                "merge_vertices": merge_vertices,
+                "import_shading": import_shading,
+            },
+            foreground_executor=_foreground_rpc,
+            result_formatter=_format_background_string_payload,
+            start_message=f"Launching GLB/GLTF import from '{filepath}'",
+            completion_message=f"Completed GLB/GLTF import from '{filepath}'",
+        )
+        ctx_info(ctx, f"Imported GLB/GLTF from: {filepath}")
+        return result
+
+    def execute():
+        handler = get_system_handler()
+        try:
+            result = handler.import_glb(
+                filepath=filepath,
+                import_pack_images=import_pack_images,
+                merge_vertices=merge_vertices,
+                import_shading=import_shading,
+            )
+            ctx_info(ctx, f"Imported GLB/GLTF from: {filepath}")
+            return result
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(
+        tool_name="import_glb",
+        params={
+            "filepath": filepath,
+            "import_pack_images": import_pack_images,
+            "merge_vertices": merge_vertices,
+            "import_shading": import_shading,
+        },
+        direct_executor=execute,
+    )
+
+
+async def import_image_as_plane(
+    ctx: Context,
+    filepath: str,
+    name: Optional[str] = None,
+    location: Optional[list] = None,
+    size: float = 1.0,
+    align_axis: Literal["Z+", "Y+", "X+", "Z-", "Y-", "X-"] = "Z+",
+    shader: Literal["PRINCIPLED", "SHADELESS", "EMISSION"] = "PRINCIPLED",
+    use_transparency: bool = True,
+) -> str:
+    """
+    [OBJECT MODE][SCENE] Imports image file as a textured plane.
+
+    Perfect for:
+    - Reference images (blueprints, concept art)
+    - Background plates for compositing
+    - Decals and signage
+    - Quick texturing
+
+    Workflow: Use as reference for modeling | Adjust plane transform as needed
+
+    Args:
+        filepath: Path to image file (PNG, JPG, etc. - must exist on Blender host)
+        name: Optional name for the created plane (defaults to filename)
+        location: Optional [x, y, z] location for the plane
+        size: Scale of the plane relative to image aspect ratio
+        align_axis: Which axis the plane faces (Z+ = facing up, Y+ = facing front)
+        shader: Material shader type (PRINCIPLED = PBR, SHADELESS = unlit, EMISSION = glowing)
+        use_transparency: Use alpha channel for transparency (PNG with alpha)
+    """
+    if is_background_task_context(ctx):
+
+        def _foreground_rpc() -> str:
+            return get_system_handler().import_image_as_plane(
+                filepath=filepath,
+                name=name,
+                location=location,
+                size=size,
+                align_axis=align_axis,
+                shader=shader,
+                use_transparency=use_transparency,
+            )
+
+        result = await run_rpc_background_job(
+            ctx,
+            tool_name="import_image_as_plane",
+            rpc_cmd="import.image_as_plane",
+            rpc_args={
+                "filepath": filepath,
+                "name": name,
+                "location": location,
+                "size": size,
+                "align_axis": align_axis,
+                "shader": shader,
+                "use_transparency": use_transparency,
+            },
+            foreground_executor=_foreground_rpc,
+            result_formatter=_format_background_string_payload,
+            start_message=f"Launching image-as-plane import from '{filepath}'",
+            completion_message=f"Completed image-as-plane import from '{filepath}'",
+        )
+        ctx_info(ctx, f"Imported image as plane from: {filepath}")
+        return result
+
+    def execute():
+        handler = get_system_handler()
+        try:
+            result = handler.import_image_as_plane(
+                filepath=filepath,
+                name=name,
+                location=location,
+                size=size,
+                align_axis=align_axis,
+                shader=shader,
+                use_transparency=use_transparency,
+            )
+            ctx_info(ctx, f"Imported image as plane from: {filepath}")
+            return result
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(
+        tool_name="import_image_as_plane",
+        params={
+            "filepath": filepath,
+            "name": name,
+            "location": location,
+            "size": size,
+            "align_axis": align_axis,
+            "shader": shader,
+            "use_transparency": use_transparency,
+        },
+        direct_executor=execute,
+    )
+
+
+def system_set_mode(
+    ctx: Context,
+    mode: Literal["OBJECT", "EDIT", "SCULPT", "VERTEX_PAINT", "WEIGHT_PAINT", "TEXTURE_PAINT", "POSE"],
+    object_name: Optional[str] = None,
+) -> str:
+    """
+    [SCENE][SAFE] Switches Blender mode for the active or specified object.
+
+    Modes:
+        - OBJECT: Object manipulation mode
+        - EDIT: Geometry editing mode (MESH, CURVE, SURFACE, META, FONT, LATTICE, ARMATURE)
+        - SCULPT: Sculpting mode (MESH only)
+        - VERTEX_PAINT: Vertex color painting (MESH only)
+        - WEIGHT_PAINT: Vertex weight painting (MESH only)
+        - TEXTURE_PAINT: Texture painting mode (MESH only)
+        - POSE: Armature pose mode (ARMATURE only)
+
+    Workflow: CRITICAL -> switching OBJECT<->EDIT | BEFORE -> mesh_* or modeling_*
+
+    Args:
+        mode: Target mode
+        object_name: Object to set mode for (default: active object). If provided,
+                    the object will be set as active before mode switch.
+    """
+    return route_tool_call(
+        tool_name="system_set_mode",
+        params={"mode": mode, "object_name": object_name},
+        direct_executor=lambda: get_system_handler().set_mode(mode, object_name),
+    )
+
+
+def system_undo(ctx: Context, steps: int = 1) -> str:
+    """
+    [SCENE][NON-DESTRUCTIVE] Undoes the last operation(s).
+
+    Safe way to revert changes during AI-assisted modeling sessions.
+    Limited to 10 steps per call for safety.
+
+    Workflow: ERROR RECOVERY -> undo mistakes | AFTER -> any destructive operation
+
+    Args:
+        steps: Number of steps to undo (default: 1, max: 10)
+    """
+    return route_tool_call(
+        tool_name="system_undo", params={"steps": steps}, direct_executor=lambda: get_system_handler().undo(steps)
+    )
+
+
+def system_redo(ctx: Context, steps: int = 1) -> str:
+    """
+    [SCENE][NON-DESTRUCTIVE] Redoes previously undone operation(s).
+
+    Restores changes that were previously undone.
+    Limited to 10 steps per call for safety.
+
+    Workflow: AFTER -> system_undo | RESTORE -> previous state
+
+    Args:
+        steps: Number of steps to redo (default: 1, max: 10)
+    """
+    return route_tool_call(
+        tool_name="system_redo", params={"steps": steps}, direct_executor=lambda: get_system_handler().redo(steps)
+    )
+
+
+def system_save_file(
+    ctx: Context,
+    filepath: Optional[str] = None,
+    compress: bool = True,
+) -> str:
+    """
+    [SCENE][DESTRUCTIVE] Saves the current Blender file.
+
+    If no filepath is provided:
+    - Saves to current file path if file was previously saved
+    - Creates auto-save in temp directory if file is unsaved
+
+    WARNING: Overwrites existing file at filepath!
+
+    Workflow: CHECKPOINT -> save progress | BEFORE -> risky operations
+
+    Args:
+        filepath: Path to save (default: current file path, or temp if unsaved)
+        compress: Compress .blend file (default: True)
+    """
+    return route_tool_call(
+        tool_name="system_save_file",
+        params={"filepath": filepath, "compress": compress},
+        direct_executor=lambda: get_system_handler().save_file(filepath, compress),
+    )
+
+
+def system_new_file(ctx: Context, load_ui: bool = False) -> str:
+    """
+    [SCENE][DESTRUCTIVE] Creates a new Blender file (clears current scene).
+
+    WARNING: Unsaved changes will be lost! Use system_save_file first if needed.
+
+    Workflow: START FRESH -> new project | AFTER -> system_save_file
+
+    Args:
+        load_ui: Load UI layout from startup file (default: False)
+    """
+    return route_tool_call(
+        tool_name="system_new_file",
+        params={"load_ui": load_ui},
+        direct_executor=lambda: get_system_handler().new_file(load_ui),
+    )
+
+
+def system_snapshot(
+    ctx: Context,
+    action: Literal["save", "restore", "list", "delete"],
+    name: Optional[str] = None,
+) -> str:
+    """
+    [SCENE][NON-DESTRUCTIVE] Manages quick save/restore checkpoints.
+
+    Snapshots are lightweight .blend file copies stored in a temp directory.
+    They persist until Blender restarts or system temp is cleaned.
+
+    Actions:
+        - save: Save current state with name (auto-generates timestamp if name not provided)
+        - restore: Restore to named snapshot (name required)
+        - list: List all available snapshots
+        - delete: Delete named snapshot (name required)
+
+    Use Cases:
+        - Before risky operations: system_snapshot(action="save", name="before_boolean")
+        - Quick iteration: save -> experiment -> restore if unhappy
+        - Compare states: save multiple snapshots with descriptive names
+
+    Workflow: CHECKPOINT -> quick save | BEFORE -> experimental operations
+
+    Args:
+        action: Operation to perform
+        name: Snapshot name (required for restore/delete, optional for save)
+    """
+    return route_tool_call(
+        tool_name="system_snapshot",
+        params={"action": action, "name": name},
+        direct_executor=lambda: get_system_handler().snapshot(action, name),
+    )

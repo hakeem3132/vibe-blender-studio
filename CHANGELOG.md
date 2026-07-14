@@ -1,0 +1,275 @@
+# CHANGELOG
+
+<!-- version list -->
+
+## v3.3.0 (2026-05-04)
+
+### Features
+
+- Ship guided quality gates and modularized guided scene runtime
+  ([#36](https://github.com/PatrykIti/blender-ai-mcp/pull/36),
+  [`3e85e61`](https://github.com/PatrykIti/blender-ai-mcp/commit/3e85e6105c879524132bc04a3e5dc9a5ce33b4a2))
+
+
+## v3.2.0 (2026-05-04)
+
+### Features
+
+- **guided-runtime**: Add repair planner, quality gates, and reference understanding
+  ([#35](https://github.com/PatrykIti/blender-ai-mcp/pull/35),
+  [`3c7450f`](https://github.com/PatrykIti/blender-ai-mcp/commit/3c7450f5e13899c11d325fb30d57bd0edec61eed))
+
+
+## v3.1.1 (2026-04-30)
+
+### Bug Fixes
+
+- Streamable guided session state and plan goal-derived quality gates
+  ([#34](https://github.com/PatrykIti/blender-ai-mcp/pull/34),
+  [`d2471eb`](https://github.com/PatrykIti/blender-ai-mcp/commit/d2471eb7f102fe839b636b7476690255a8456cd4))
+
+
+## v3.1.0 (2026-04-27)
+
+### Features
+
+- Harden llm-guided creature reconstruction and external vision runtime
+  ([#33](https://github.com/PatrykIti/blender-ai-mcp/pull/33),
+  [`eaa4419`](https://github.com/PatrykIti/blender-ai-mcp/commit/eaa441970bc87d1bfc03bb899d85653af7ec9ab8))
+
+
+## v3.0.0 (2026-04-05)
+
+### Features
+
+- Finalize guided-reference reliability across hybrid loop, transport, and truth
+  ([#32](https://github.com/PatrykIti/blender-ai-mcp/pull/32),
+  [`ccf39d2`](https://github.com/PatrykIti/blender-ai-mcp/commit/ccf39d22c58a28af88b24955386ae4913133b682))
+
+
+## v2.3.0 (2026-04-01)
+
+### Features
+
+- Complete guided FastMCP platform and vision/reference workflows
+  ([#31](https://github.com/PatrykIti/blender-ai-mcp/pull/31),
+  [`96a55dd`](https://github.com/PatrykIti/blender-ai-mcp/commit/96a55ddf41c150f0a335f8f787ec49e689e07e89))
+
+
+## v2.2.0 (2026-03-20)
+
+### Features
+
+- Add advanced introspection tools, workflow catalog import, and feature phone workflows
+  ([#30](https://github.com/PatrykIti/blender-ai-mcp/pull/30),
+  [`d1d4c3a`](https://github.com/PatrykIti/blender-ai-mcp/commit/d1d4c3a7390c02dd861d86053866fefba6916c5f))
+
+
+## v2.1.1 (2025-12-19)
+
+### Bug Fixes
+
+- Workflow ([#29](https://github.com/PatrykIti/blender-ai-mcp/pull/29),
+  [`70bcce5`](https://github.com/PatrykIti/blender-ai-mcp/commit/70bcce520490e517fc7eed4f770d7fa5350bd4a6))
+
+### Chores
+
+- Fixing docker build jobs ([#27](https://github.com/PatrykIti/blender-ai-mcp/pull/27),
+  [`8d870ab`](https://github.com/PatrykIti/blender-ai-mcp/commit/8d870abd4d6fe870040b17145b8086584b41b849))
+
+- Fixing merge manifests for docker image
+  ([#28](https://github.com/PatrykIti/blender-ai-mcp/pull/28),
+  [`3bdddd0`](https://github.com/PatrykIti/blender-ai-mcp/commit/3bdddd063d09e11c48279f91933e05a10d3eb993))
+
+
+## v2.1.0 (2025-12-19)
+
+### Chores
+
+- Tighten licensing + add repo standards docs (security/support/coc)
+  ([#25](https://github.com/PatrykIti/blender-ai-mcp/pull/25),
+  [`baed7d9`](https://github.com/PatrykIti/blender-ai-mcp/commit/baed7d9c401a451aed13a59c2ad14474edd2dfa1))
+
+### Features
+
+- Add multi-arch Docker builds (amd64/arm64)
+  ([#26](https://github.com/PatrykIti/blender-ai-mcp/pull/26),
+  [`74b59ee`](https://github.com/PatrykIti/blender-ai-mcp/commit/74b59eed6b210df897dae6cfccd7ac93434968bd))
+
+
+## v2.0.0 (2025-12-18)
+
+### Features
+
+- Introduce Router Supervisor + YAML workflow engine (semantic matching, new tool suites)
+  ([#24](https://github.com/PatrykIti/blender-ai-mcp/pull/24),
+  [`e124c24`](https://github.com/PatrykIti/blender-ai-mcp/commit/e124c24ecce7a7f4c214980e78d86505b42fb8ec))
+
+
+## v1.14.0 (2025-11-30)
+
+### Documentation
+
+- Roadmap expansion - 10 new TASKs + LaBSE Router + 47 planned tools
+  ([#20](https://github.com/PatrykIti/blender-ai-mcp/pull/20),
+  [`240f882`](https://github.com/PatrykIti/blender-ai-mcp/commit/240f8820f04d149660687f438160ab6b566ac9a6))
+
+### Features
+
+- New Tools Suite - TASK-029 to TASK-039
+  ([#21](https://github.com/PatrykIti/blender-ai-mcp/pull/21),
+  [`1343046`](https://github.com/PatrykIti/blender-ai-mcp/commit/1343046d3fb67226b3b8a61a97db3a0a7fa4d5ce))
+
+
+## v1.13.1 (2025-11-29)
+
+### Bug Fixes
+
+- Blender 5.0 API compatibility (TASK-022 to TASK-027)
+  ([#19](https://github.com/PatrykIti/blender-ai-mcp/pull/19),
+  [`aa48369`](https://github.com/PatrykIti/blender-ai-mcp/commit/aa48369c2e98ebef3ee76b4e00a9b639305065c1))
+
+
+## v1.13.0 (2025-11-29)
+
+### Features
+
+- Phase 2 Mesh Tools - Organic, Precision, Transform, Curves & Testing (TASK-016 to TASK-028)
+  ([#18](https://github.com/PatrykIti/blender-ai-mcp/pull/18),
+  [`0f86081`](https://github.com/PatrykIti/blender-ai-mcp/commit/0f86081536ca2892c1a34478271b3d82d817cffd))
+
+
+## v1.12.0 (2025-11-29)
+
+### Documentation
+
+- Improve README roadmap structure + add mega tools tasks
+  ([#16](https://github.com/PatrykIti/blender-ai-mcp/pull/16),
+  [`f6a79d5`](https://github.com/PatrykIti/blender-ai-mcp/commit/f6a79d5b1645e422ee494b1956674674f848369c))
+
+### Features
+
+- LLM Context Optimization - Mega Tools (TASK-020)
+  ([#17](https://github.com/PatrykIti/blender-ai-mcp/pull/17),
+  [`473f04f`](https://github.com/PatrykIti/blender-ai-mcp/commit/473f04fc0a98e045efb789d4638a4e4929243f22))
+
+
+## v1.11.0 (2025-11-28)
+
+### Features
+
+- Phase 2.1 Advanced Selection Tools (TASK-015)
+  ([#15](https://github.com/PatrykIti/blender-ai-mcp/pull/15),
+  [`1edc6c5`](https://github.com/PatrykIti/blender-ai-mcp/commit/1edc6c5199a9234e0322c9bcb5f97d9b98378229))
+
+
+## v1.10.1 (2025-11-28)
+
+### Bug Fixes
+
+- MCP parameter validation and context handling
+  ([#14](https://github.com/PatrykIti/blender-ai-mcp/pull/14),
+  [`11e9317`](https://github.com/PatrykIti/blender-ai-mcp/commit/11e93177fb36d9a73d77081d9b320334475a5932))
+
+
+## v1.10.0 (2025-11-27)
+
+### Features
+
+- Phase 7 Introspection Tools & Mesh Fixes
+  ([#13](https://github.com/PatrykIti/blender-ai-mcp/pull/13),
+  [`9d3d688`](https://github.com/PatrykIti/blender-ai-mcp/commit/9d3d6884c09fe2ebb3d9788f97952ecc4773c6da))
+
+
+## v1.9.0 (2025-11-25)
+
+### Features
+
+- Advanced Mesh Operations & Roadmap Update (Phase 2 Part 4)
+  ([#12](https://github.com/PatrykIti/blender-ai-mcp/pull/12),
+  [`ecbd85b`](https://github.com/PatrykIti/blender-ai-mcp/commit/ecbd85b760361a42e900130eb854490cb6b6ca60))
+
+
+## v1.8.0 (2025-11-25)
+
+### Features
+
+- Edge & Detail Operations (Phase 2 Part 3)
+  ([#11](https://github.com/PatrykIti/blender-ai-mcp/pull/11),
+  [`5390995`](https://github.com/PatrykIti/blender-ai-mcp/commit/5390995c66e9fc0452e945ba946c61cc32604752))
+
+
+## v1.7.0 (2025-11-25)
+
+### Features
+
+- Mesh Extrusion Tools & Selection Fixes (Phase 2 Part 2)
+  ([#10](https://github.com/PatrykIti/blender-ai-mcp/pull/10),
+  [`a5513cb`](https://github.com/PatrykIti/blender-ai-mcp/commit/a5513cb83f740426b2bb2b9ea3fdf43adbd4d026))
+
+
+## v1.6.0 (2025-11-24)
+
+### Features
+
+- Edit Mode Foundation & Stability Fixes ([#9](https://github.com/PatrykIti/blender-ai-mcp/pull/9),
+  [`d68fdd4`](https://github.com/PatrykIti/blender-ai-mcp/commit/d68fdd42888545ce7e926136a480d765d0d3021c))
+
+
+## v1.5.0 (2025-11-24)
+
+### Features
+
+- Edit Mode Foundation & Scene Mode Control (Phase 2 Part 1)
+  ([#8](https://github.com/PatrykIti/blender-ai-mcp/pull/8),
+  [`d7f9e37`](https://github.com/PatrykIti/blender-ai-mcp/commit/d7f9e375143e35686461e6691bf35522772f4c40))
+
+
+## v1.4.0 (2025-11-24)
+
+### Features
+
+- Extended Scene Control & Construction Tools (Phase 1 Complete)
+  ([#7](https://github.com/PatrykIti/blender-ai-mcp/pull/7),
+  [`1257a63`](https://github.com/PatrykIti/blender-ai-mcp/commit/1257a637f548bdc49ad5a3f6670f607839f0332b))
+
+
+## v1.3.0 (2025-11-23)
+
+### Features
+
+- **modeling**: Complete Object Mode Toolset, Refactor Naming, and UX Improvements
+  ([#6](https://github.com/PatrykIti/blender-ai-mcp/pull/6),
+  [`37d4ff3`](https://github.com/PatrykIti/blender-ai-mcp/commit/37d4ff3c071420059b6bb4c3694e0ee77332aef4))
+
+
+## v1.2.0 (2025-11-23)
+
+### Chores
+
+- **ci**: Enhance Docker CI/CD and link image to repository
+  ([#3](https://github.com/PatrykIti/blender-ai-mcp/pull/3),
+  [`33a0107`](https://github.com/PatrykIti/blender-ai-mcp/commit/33a0107934d397d403cf2e8c17e46d36ad2d77c4))
+
+- **docs**: Update readme md star history ([#4](https://github.com/PatrykIti/blender-ai-mcp/pull/4),
+  [`ca6bfc5`](https://github.com/PatrykIti/blender-ai-mcp/commit/ca6bfc5fa6eda6ed6ca83fae0deac2bf11c467d1))
+
+### Features
+
+- **scene**: Add Extended Scene Tools (Duplicate, Set Active, Viewport)
+  ([#5](https://github.com/PatrykIti/blender-ai-mcp/pull/5),
+  [`d669116`](https://github.com/PatrykIti/blender-ai-mcp/commit/d669116efdcd4945c15918693ac88395f1b7e555))
+
+
+## v1.1.0 (2025-11-22)
+
+### Features
+
+- Finalize documentation and fixes (MVP Fixes)
+  ([#2](https://github.com/PatrykIti/blender-ai-mcp/pull/2),
+  [`faad8f3`](https://github.com/PatrykIti/blender-ai-mcp/commit/faad8f30a6ca0be5c35437ea499f47db059d07f1))
+
+
+## v1.0.0 (2025-11-22)
+
+- Initial Release

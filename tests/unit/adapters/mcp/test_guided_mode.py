@@ -1,0 +1,179 @@
+"""Tests for guided-mode visibility diagnostics and session application."""
+
+from __future__ import annotations
+
+import asyncio
+
+from server.adapters.mcp.guided_mode import apply_session_visibility, build_visibility_diagnostics
+from server.adapters.mcp.session_phase import SessionPhase
+from server.adapters.mcp.transforms.visibility_policy import (
+    GUIDED_DISCOVERY_TOOLS,
+    GUIDED_ENTRY_TOOLS,
+    GUIDED_INSPECT_ESCAPE_HATCH_TOOLS,
+    GUIDED_SPATIAL_CONTEXT_DIRECT_TOOLS,
+    GUIDED_SPATIAL_SUPPORT_TOOLS,
+    GUIDED_VIEW_DIAGNOSTIC_TOOLS,
+)
+
+
+class FakeAsyncContext:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    async def reset_visibility(self) -> None:
+        self.calls.append(("reset_visibility", {}))
+
+    async def enable_components(self, **kwargs) -> None:
+        self.calls.append(("enable_components", kwargs))
+
+    async def disable_components(self, **kwargs) -> None:
+        self.calls.append(("disable_components", kwargs))
+
+
+def test_guided_mode_bootstrap_visibility_includes_default_spatial_support():
+    """llm-guided bootstrap should keep the small entry layer while exposing direct spatial helpers."""
+
+    diagnostics = build_visibility_diagnostics("llm-guided", SessionPhase.BOOTSTRAP)
+
+    assert diagnostics.visible_capability_ids == ("scene", "reference", "router", "workflow_catalog")
+    assert diagnostics.visible_entry_capability_ids == ("reference", "router", "workflow_catalog")
+    assert "scene" not in diagnostics.hidden_capability_ids
+    assert any(
+        rule.get("names") == set(GUIDED_SPATIAL_SUPPORT_TOOLS)
+        for rule in diagnostics.rules
+        if rule.get("components") == {"tool"}
+    )
+
+
+def test_guided_mode_build_phase_exposes_build_capabilities_plus_entry_tools():
+    """Build phase should expand beyond the tiny entry surface."""
+
+    diagnostics = build_visibility_diagnostics("llm-guided", SessionPhase.BUILD)
+
+    assert "router" in diagnostics.visible_capability_ids
+    assert "workflow_catalog" in diagnostics.visible_capability_ids
+    assert "modeling" in diagnostics.visible_capability_ids
+    assert "mesh" in diagnostics.visible_capability_ids
+    assert "scene" in diagnostics.visible_capability_ids
+    assert "material" in diagnostics.visible_capability_ids
+    assert "baking" not in diagnostics.visible_capability_ids
+    assert "armature" not in diagnostics.visible_capability_ids
+    assert "sculpt" not in diagnostics.visible_capability_ids
+    assert "text" not in diagnostics.visible_capability_ids
+
+
+def test_guided_mode_can_narrow_build_visibility_for_creature_handoff():
+    """Creature handoff should keep build categories visible while hiding broad/noisy tools."""
+
+    diagnostics = build_visibility_diagnostics(
+        "llm-guided",
+        SessionPhase.BUILD,
+        guided_handoff={
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": [
+                "modeling_create_primitive",
+                "modeling_transform_object",
+                "mesh_extrude_region",
+                "mesh_loop_cut",
+                "mesh_bevel",
+                "inspect_scene",
+            ],
+            "supporting_tools": [
+                "reference_images",
+                "reference_iterate_stage_checkpoint",
+                "router_get_status",
+            ],
+        },
+    )
+
+    assert "modeling" in diagnostics.visible_capability_ids
+    assert "mesh" in diagnostics.visible_capability_ids
+    assert diagnostics.rules[-1]["names"] == {
+        "modeling_create_primitive",
+        "modeling_transform_object",
+        "mesh_extrude_region",
+        "mesh_loop_cut",
+        "mesh_bevel",
+        "inspect_scene",
+        "reference_images",
+        "reference_iterate_stage_checkpoint",
+        "router_get_status",
+    }
+
+
+def test_guided_mode_can_gate_build_visibility_by_guided_flow_step():
+    """Flow-step gating should win over the broader creature handoff build surface."""
+
+    diagnostics = build_visibility_diagnostics(
+        "llm-guided",
+        SessionPhase.BUILD,
+        guided_handoff={
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": ["modeling_create_primitive", "mesh_extrude_region", "macro_finish_form"],
+            "supporting_tools": ["reference_images", "reference_iterate_stage_checkpoint", "router_get_status"],
+        },
+        guided_flow_state={
+            "flow_id": "guided_creature_flow",
+            "domain_profile": "creature",
+            "current_step": "establish_spatial_context",
+        },
+    )
+
+    assert diagnostics.rules[-1]["names"] == set(GUIDED_SPATIAL_CONTEXT_DIRECT_TOOLS)
+    assert "macro_finish_form" not in diagnostics.rules[-1]["names"]
+    assert "scene_scope_graph" in diagnostics.rules[-1]["names"]
+
+
+def test_guided_mode_inspect_phase_prefers_verification_capabilities_over_build_families():
+    """Inspect/validate phase should expose verification/capture families, not broad build families."""
+
+    diagnostics = build_visibility_diagnostics("llm-guided", SessionPhase.INSPECT_VALIDATE)
+
+    assert "scene" in diagnostics.visible_capability_ids
+    assert "mesh" in diagnostics.visible_capability_ids
+    assert "extraction" in diagnostics.visible_capability_ids
+    assert "modeling" not in diagnostics.visible_capability_ids
+    assert "armature" not in diagnostics.visible_capability_ids
+    assert "sculpt" not in diagnostics.visible_capability_ids
+    assert "system" not in diagnostics.visible_capability_ids
+    assert set(GUIDED_VIEW_DIAGNOSTIC_TOOLS).issubset(diagnostics.rules[-1]["names"])
+
+
+def test_legacy_flat_visibility_keeps_full_surface_visible():
+    """Legacy compatibility profile should not hide capabilities by phase."""
+
+    diagnostics = build_visibility_diagnostics("legacy-flat", SessionPhase.BOOTSTRAP)
+
+    assert "scene" in diagnostics.visible_capability_ids
+    assert "mesh" in diagnostics.visible_capability_ids
+    assert "router" in diagnostics.visible_capability_ids
+    assert diagnostics.hidden_capability_ids == ()
+
+
+def test_apply_session_visibility_uses_native_fastmcp_session_api():
+    """Session visibility should be applied through reset/enable/disable component calls."""
+
+    ctx = FakeAsyncContext()
+
+    diagnostics = asyncio.run(
+        apply_session_visibility(
+            ctx,
+            surface_profile="llm-guided",
+            phase=SessionPhase.INSPECT_VALIDATE,
+        )
+    )
+
+    assert diagnostics.phase == SessionPhase.INSPECT_VALIDATE
+    assert ctx.calls[0][0] == "reset_visibility"
+    assert ctx.calls[1][0] == "disable_components"
+    assert ctx.calls[1][1]["match_all"] is True
+    assert any(name == "enable_components" and call["names"] == set(GUIDED_ENTRY_TOOLS) for name, call in ctx.calls[2:])
+    assert any(
+        name == "enable_components" and call["names"] == set(GUIDED_DISCOVERY_TOOLS) for name, call in ctx.calls[2:]
+    )
+    assert any(
+        name == "enable_components" and call["names"] == set(GUIDED_INSPECT_ESCAPE_HATCH_TOOLS)
+        for name, call in ctx.calls[2:]
+    )

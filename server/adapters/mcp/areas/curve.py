@@ -1,0 +1,112 @@
+from typing import Any, Dict, List, Literal, Optional
+
+from fastmcp import Context
+
+from server.adapters.mcp.areas._registration import register_existing_tools
+from server.adapters.mcp.router_helper import route_tool_call
+from server.adapters.mcp.visibility.tags import get_capability_tags
+from server.infrastructure.di import get_curve_handler
+
+CURVE_PUBLIC_TOOL_NAMES = (
+    "curve_create",
+    "curve_to_mesh",
+    "curve_get_data",
+)
+
+
+def register_curve_tools(target: Any) -> Dict[str, Any]:
+    """Register public curve tools on a FastMCP server or LocalProvider."""
+
+    return register_existing_tools(globals(), target, CURVE_PUBLIC_TOOL_NAMES, tags=get_capability_tags("curve"))
+
+
+# ==============================================================================
+# TASK-021: Phase 2.6 - Curves & Procedural
+# ==============================================================================
+
+
+def curve_create(
+    ctx: Context,
+    curve_type: Literal["BEZIER", "NURBS", "PATH", "CIRCLE"] = "BEZIER",
+    location: Optional[List[float]] = None,
+) -> str:
+    """
+    [OBJECT MODE][SAFE] Creates a curve primitive object.
+    Curves are non-destructive and can be converted to mesh via curve_to_mesh.
+
+    Workflow: START → curve_to_mesh (if mesh needed) | USE FOR → paths, profiles, modeling guides
+
+    Args:
+        curve_type: Type of curve to create.
+            - BEZIER: Bezier curve with control handles (default)
+            - NURBS: NURBS curve for smooth surfaces
+            - PATH: NURBS path for animation/follow paths
+            - CIRCLE: Bezier circle (closed curve)
+        location: Optional [x, y, z] position. Default is [0, 0, 0].
+
+    Examples:
+        curve_create(curve_type="BEZIER") -> Creates a Bezier curve at origin
+        curve_create(curve_type="CIRCLE", location=[0, 0, 1]) -> Circle at Z=1
+        curve_create(curve_type="PATH") -> Creates animation path
+    """
+
+    def execute():
+        handler = get_curve_handler()
+        try:
+            return handler.create_curve(curve_type, location)
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(
+        tool_name="curve_create", params={"curve_type": curve_type, "location": location}, direct_executor=execute
+    )
+
+
+def curve_to_mesh(ctx: Context, object_name: str) -> str:
+    """
+    [OBJECT MODE][DESTRUCTIVE] Converts a curve object to mesh geometry.
+    The curve is permanently converted - use modeling_add_modifier for non-destructive workflow.
+
+    Workflow: BEFORE → curve_create | AFTER → mesh_* operations
+
+    Args:
+        object_name: Name of the curve object to convert.
+
+    Examples:
+        curve_to_mesh(object_name="BezierCurve") -> Converts curve to mesh
+    """
+
+    def execute():
+        handler = get_curve_handler()
+        try:
+            return handler.curve_to_mesh(object_name)
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(tool_name="curve_to_mesh", params={"object_name": object_name}, direct_executor=execute)
+
+
+def curve_get_data(ctx: Context, object_name: str) -> str:
+    """
+    [OBJECT MODE][READ-ONLY][SAFE] Returns curve splines, points, and settings.
+
+    Workflow: READ-ONLY | USE → curve reconstruction in workflows
+
+    Args:
+        object_name: Name of the curve object to inspect
+
+    Returns:
+        JSON string with curve data including splines and point handles.
+    """
+
+    def execute():
+        handler = get_curve_handler()
+        try:
+            import json
+
+            data = handler.get_data(object_name)
+            return json.dumps(data, indent=2)
+        except RuntimeError as e:
+            return str(e)
+
+    return route_tool_call(tool_name="curve_get_data", params={"object_name": object_name}, direct_executor=execute)

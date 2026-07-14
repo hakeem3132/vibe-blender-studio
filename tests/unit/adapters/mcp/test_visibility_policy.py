@@ -1,0 +1,605 @@
+"""Tests for tagged providers and deterministic visibility policy."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from server.adapters.mcp.areas.router import register_router_tools
+from server.adapters.mcp.areas.scene import register_scene_tools
+from server.adapters.mcp.platform.capability_manifest import get_capability_manifest
+from server.adapters.mcp.session_phase import SessionPhase
+from server.adapters.mcp.surfaces import get_surface_profile
+from server.adapters.mcp.transforms import materialize_transforms
+from server.adapters.mcp.transforms.visibility_policy import (
+    CREATURE_LOW_POLY_BLOCKOUT_DIRECT_TOOLS,
+    CREATURE_LOW_POLY_BLOCKOUT_SUPPORTING_TOOLS,
+    GUIDED_BUILD_ESCAPE_HATCH_TOOLS,
+    GUIDED_DISCOVERY_TOOLS,
+    GUIDED_ENTRY_TOOLS,
+    GUIDED_INSPECT_ESCAPE_HATCH_TOOLS,
+    GUIDED_SPATIAL_CONTEXT_DIRECT_TOOLS,
+    GUIDED_SPATIAL_GRAPH_TOOLS,
+    GUIDED_SPATIAL_SUPPORT_TOOLS,
+    GUIDED_UTILITY_HANDOFF_TOOLS,
+    GUIDED_UTILITY_SUPPORTING_TOOLS,
+    GUIDED_UTILITY_TOOLS,
+    GUIDED_VIEW_DIAGNOSTIC_TOOLS,
+    build_guided_handoff_payload,
+    build_visibility_rules,
+    get_guided_overlay_family_order,
+    materialize_visible_tool_names,
+    resolve_guided_tool_family,
+)
+from server.adapters.mcp.visibility.tags import ENTRY_GUIDED, get_capability_phase_hints, get_capability_tags, phase_tag
+
+
+@dataclass
+class RegisteredTool:
+    """Minimal stand-in for a registered tool object."""
+
+    name: str
+    fn_name: str
+    tags: set[str]
+
+
+class FakeRegistrarTarget:
+    """A FastMCP-compatible target exposing the .tool(...) registration shape."""
+
+    def __init__(self) -> None:
+        self.registered: dict[str, RegisteredTool] = {}
+
+    def tool(self, name_or_fn=None, **kwargs):
+        explicit_name = kwargs.get("name")
+        explicit_tags = set(kwargs.get("tags", set()))
+
+        def register(fn):
+            tool_name = explicit_name or (name_or_fn if isinstance(name_or_fn, str) else fn.__name__)
+            tool = RegisteredTool(name=tool_name, fn_name=fn.__name__, tags=set(explicit_tags))
+            self.registered[tool_name] = tool
+            return tool
+
+        if callable(name_or_fn):
+            return register(name_or_fn)
+
+        return register
+
+
+def test_capability_manifest_carries_coarse_tags_and_metadata_only_phase_hints():
+    """Capability manifest should keep coarse tags while phase context moves to metadata-only hints."""
+
+    manifest = {entry.capability_id: entry for entry in get_capability_manifest()}
+
+    assert ENTRY_GUIDED in manifest["router"].tags
+    assert ENTRY_GUIDED in manifest["workflow_catalog"].tags
+    assert not any(tag.startswith("phase:") for tag in manifest["modeling"].tags)
+    assert not any(tag.startswith("phase:") for tag in manifest["mesh"].tags)
+    assert phase_tag(SessionPhase.BUILD) in manifest["modeling"].phase_hints
+    assert phase_tag(SessionPhase.INSPECT_VALIDATE) in manifest["mesh"].phase_hints
+    assert manifest["scene"].phase_hints == get_capability_phase_hints("scene")
+
+
+def test_registrars_apply_manifest_tags_to_registered_tools():
+    """Provider registration should materialize tags from the shared capability model."""
+
+    router_target = FakeRegistrarTarget()
+    scene_target = FakeRegistrarTarget()
+
+    register_router_tools(router_target)
+    register_scene_tools(scene_target)
+
+    assert router_target.registered["router_set_goal"].tags == set(get_capability_tags("router"))
+    assert scene_target.registered["scene_context"].tags == set(get_capability_tags("scene"))
+
+
+def test_visibility_rules_are_profile_and_phase_deterministic():
+    """Visibility policy should produce deterministic rules for profile/phase pairs."""
+
+    assert build_visibility_rules("legacy-manual", SessionPhase.BOOTSTRAP) == []
+    assert build_visibility_rules("legacy-flat", SessionPhase.BOOTSTRAP) == []
+
+    bootstrap_rules = build_visibility_rules("llm-guided", SessionPhase.BOOTSTRAP)
+    build_rules = build_visibility_rules("llm-guided", SessionPhase.BUILD)
+    inspect_rules = build_visibility_rules("llm-guided", SessionPhase.INSPECT_VALIDATE)
+
+    assert bootstrap_rules[0]["enabled"] is False
+    assert bootstrap_rules[0]["match_all"] is True
+    assert bootstrap_rules[1]["names"] == set(GUIDED_ENTRY_TOOLS)
+    assert bootstrap_rules[2]["names"] == set(GUIDED_DISCOVERY_TOOLS)
+    assert bootstrap_rules[3]["names"] == set(GUIDED_SPATIAL_SUPPORT_TOOLS)
+    assert bootstrap_rules[4]["names"] == set(GUIDED_UTILITY_TOOLS)
+    assert bootstrap_rules[5]["names"] == {"list_prompts", "get_prompt"}
+    assert bootstrap_rules[6]["components"] == {"prompt"}
+    assert set(GUIDED_SPATIAL_GRAPH_TOOLS).issubset(bootstrap_rules[3]["names"])
+    assert set(GUIDED_VIEW_DIAGNOSTIC_TOOLS).issubset(bootstrap_rules[3]["names"])
+    assert build_rules[-1]["names"] == set(GUIDED_BUILD_ESCAPE_HATCH_TOOLS)
+    assert set(GUIDED_VIEW_DIAGNOSTIC_TOOLS).issubset(build_rules[-1]["names"])
+    assert "scene_clean_scene" in build_rules[-1]["names"]
+    assert "macro_finish_form" in build_rules[-1]["names"]
+    assert "modeling_add_modifier" not in build_rules[-1]["names"]
+    assert "modeling_apply_modifier" not in build_rules[-1]["names"]
+    assert "modeling_list_modifiers" not in build_rules[-1]["names"]
+    assert inspect_rules[-1]["names"] == set(GUIDED_INSPECT_ESCAPE_HATCH_TOOLS)
+    assert set(GUIDED_SPATIAL_GRAPH_TOOLS).issubset(inspect_rules[-1]["names"])
+    assert set(GUIDED_VIEW_DIAGNOSTIC_TOOLS).issubset(inspect_rules[-1]["names"])
+    assert "macro_attach_part_to_surface" in inspect_rules[-1]["names"]
+    assert "macro_align_part_with_contact" in inspect_rules[-1]["names"]
+    assert "macro_cleanup_part_intersections" in inspect_rules[-1]["names"]
+
+    code_mode_rules = build_visibility_rules(get_surface_profile("code-mode-pilot"), SessionPhase.BOOTSTRAP)
+    assert code_mode_rules[0]["enabled"] is False
+    assert code_mode_rules[0]["match_all"] is True
+    assert "scene_snapshot_state" in code_mode_rules[1]["names"]
+    assert "mesh_extrude_region" not in code_mode_rules[1]["names"]
+
+
+def test_guided_mesh_edit_tools_resolve_to_secondary_parts_family():
+    """Visible mesh edit tools should participate in guided family gating."""
+
+    for tool_name in (
+        "mesh_delete_selected",
+        "mesh_extrude_region",
+        "mesh_fill_holes",
+        "mesh_inset",
+        "mesh_boolean",
+        "mesh_loop_cut",
+        "mesh_bevel",
+        "mesh_subdivide",
+        "mesh_smooth",
+        "mesh_flatten",
+        "mesh_randomize",
+        "mesh_shrink_fatten",
+        "mesh_transform_selected",
+        "mesh_bridge_edge_loops",
+        "mesh_duplicate_selected",
+        "mesh_bisect",
+        "mesh_edge_slide",
+        "mesh_vert_slide",
+        "mesh_triangulate",
+        "mesh_remesh_voxel",
+        "mesh_spin",
+        "mesh_screw",
+        "mesh_add_vertex",
+        "mesh_add_edge_face",
+        "mesh_create_vertex_group",
+        "mesh_assign_to_group",
+        "mesh_remove_from_group",
+        "mesh_edge_crease",
+        "mesh_bevel_weight",
+        "mesh_mark_sharp",
+        "mesh_symmetrize",
+        "mesh_merge_by_distance",
+        "mesh_dissolve",
+        "mesh_tris_to_quads",
+        "mesh_normals_make_consistent",
+        "mesh_decimate",
+        "mesh_knife_project",
+        "mesh_rip",
+        "mesh_split",
+        "mesh_edge_split",
+        "mesh_set_proportional_edit",
+        "mesh_grid_fill",
+        "mesh_poke_faces",
+        "mesh_beautify_fill",
+        "mesh_mirror",
+    ):
+        assert resolve_guided_tool_family(tool_name) == "secondary_parts"
+
+
+def test_guided_family_map_covers_bounded_build_mutators():
+    """Bounded build mutators should not bypass family gating by resolving to None."""
+
+    assert resolve_guided_tool_family("macro_cutout_recess") == "secondary_parts"
+    assert resolve_guided_tool_family("mesh_boolean") == "secondary_parts"
+    assert resolve_guided_tool_family("modeling_add_modifier") == "finish"
+
+
+def test_materialize_visible_tool_names_follows_ordered_runtime_rules():
+    """Visibility diagnostics should derive from the same ordered rule model as the shaped runtime surface."""
+
+    rules = build_visibility_rules("llm-guided", SessionPhase.BOOTSTRAP)
+    visible_names = materialize_visible_tool_names(
+        {
+            "router_set_goal",
+            "router_get_status",
+            "workflow_catalog",
+            "browse_workflows",
+            "reference_images",
+            "scene_scope_graph",
+            "scene_relation_graph",
+            "scene_view_diagnostics",
+            "search_tools",
+            "call_tool",
+            "modeling_create_primitive",
+        },
+        rules,
+    )
+
+    assert "router_set_goal" in visible_names
+    assert "router_get_status" in visible_names
+    assert "browse_workflows" in visible_names
+    assert "scene_scope_graph" in visible_names
+    assert "scene_view_diagnostics" in visible_names
+    assert "search_tools" in visible_names
+    assert "call_tool" in visible_names
+    assert "modeling_create_primitive" not in visible_names
+
+
+def test_guided_handoff_payloads_stay_explicit_and_bounded():
+    """Guided handoff payloads should expose explicit next tools without reopening workflow forcing."""
+
+    manual = build_guided_handoff_payload(
+        "guided_manual_build",
+        surface_profile="llm-guided",
+        phase=SessionPhase.BUILD,
+        goal="create a low-poly squirrel matching front and side reference images",
+    )
+    utility = build_guided_handoff_payload(
+        "guided_utility",
+        surface_profile="llm-guided",
+        phase=SessionPhase.PLANNING,
+    )
+
+    assert manual is not None
+    assert manual["recipe_id"] == "low_poly_creature_blockout"
+    assert manual["target_phase"] == "build"
+    assert manual["direct_tools"] == list(CREATURE_LOW_POLY_BLOCKOUT_DIRECT_TOOLS)
+    assert manual["supporting_tools"] == list(CREATURE_LOW_POLY_BLOCKOUT_SUPPORTING_TOOLS)
+    assert set(GUIDED_SPATIAL_GRAPH_TOOLS).issubset(manual["supporting_tools"])
+    assert set(GUIDED_VIEW_DIAGNOSTIC_TOOLS).issubset(manual["supporting_tools"])
+    assert manual["discovery_tools"] == list(GUIDED_DISCOVERY_TOOLS)
+    assert manual["workflow_import_recommended"] is False
+
+    assert utility is not None
+    assert utility["recipe_id"] is None
+    assert utility["target_phase"] == "planning"
+    assert utility["direct_tools"] == list(GUIDED_UTILITY_HANDOFF_TOOLS)
+    assert utility["supporting_tools"] == list(GUIDED_UTILITY_SUPPORTING_TOOLS)
+    assert utility["discovery_tools"] == list(GUIDED_DISCOVERY_TOOLS)
+    assert utility["workflow_import_recommended"] is False
+
+
+def test_gate_blocker_visibility_exposes_bounded_attachment_repair_tools():
+    """Failed seam gates should open the bounded verification/repair lane."""
+
+    rules = build_visibility_rules(
+        "llm-guided",
+        SessionPhase.BUILD,
+        guided_handoff={
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": ["modeling_create_primitive", "macro_finish_form"],
+            "supporting_tools": ["reference_iterate_stage_checkpoint", "router_get_status"],
+        },
+        guided_flow_state={
+            "flow_id": "guided_creature_flow",
+            "domain_profile": "creature",
+            "current_step": "place_secondary_parts",
+        },
+        gate_plan={
+            "plan_id": "creature_quality_gate_plan",
+            "domain_profile": "creature",
+            "completion_blockers": [
+                {
+                    "gate_id": "tail_body_seam",
+                    "gate_type": "attachment_seam",
+                    "label": "tail seated on body",
+                    "status": "failed",
+                    "reason_code": "relation_floating_gap",
+                    "recommended_bounded_tools": ["scene_relation_graph", "macro_attach_part_to_surface"],
+                    "message": "Tail seam is floating.",
+                }
+            ],
+            "gates": [],
+        },
+    )
+    visible = set(
+        materialize_visible_tool_names(
+            {
+                "scene_relation_graph",
+                "scene_measure_gap",
+                "scene_assert_contact",
+                "macro_attach_part_to_surface",
+                "macro_align_part_with_contact",
+                "modeling_create_primitive",
+                "macro_finish_form",
+            },
+            rules,
+        )
+    )
+
+    assert "scene_relation_graph" in visible
+    assert "scene_measure_gap" in visible
+    assert "scene_assert_contact" in visible
+    assert "macro_attach_part_to_surface" in visible
+    assert "macro_align_part_with_contact" in visible
+    assert "modeling_create_primitive" in visible
+    assert "macro_finish_form" in visible
+
+
+def test_shape_profile_gate_waits_behind_unresolved_seam_gate():
+    """Profile/refinement tools should not open while required seam gates are failing."""
+
+    rule_inputs = {
+        "surface_profile": "llm-guided",
+        "phase": SessionPhase.BUILD,
+        "guided_handoff": {
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": [],
+            "supporting_tools": [],
+        },
+        "guided_flow_state": {
+            "flow_id": "guided_creature_flow",
+            "domain_profile": "creature",
+            "current_step": "place_secondary_parts",
+        },
+    }
+    blocked_rules = build_visibility_rules(
+        **rule_inputs,
+        gate_plan={
+            "plan_id": "creature_quality_gate_plan",
+            "domain_profile": "creature",
+            "completion_blockers": [
+                {
+                    "gate_id": "tail_body_seam",
+                    "gate_type": "attachment_seam",
+                    "label": "tail seated on body",
+                    "status": "failed",
+                    "reason_code": "relation_floating_gap",
+                    "message": "Tail seam is floating.",
+                },
+                {
+                    "gate_id": "tail_profile",
+                    "gate_type": "shape_profile",
+                    "label": "tail arc profile",
+                    "status": "failed",
+                    "reason_code": "missing_authoritative_evidence",
+                    "message": "Tail profile is not verified.",
+                },
+            ],
+            "gates": [],
+        },
+    )
+    profile_rules = build_visibility_rules(
+        **rule_inputs,
+        gate_plan={
+            "plan_id": "creature_quality_gate_plan",
+            "domain_profile": "creature",
+            "completion_blockers": [
+                {
+                    "gate_id": "tail_profile",
+                    "gate_type": "shape_profile",
+                    "label": "tail arc profile",
+                    "status": "failed",
+                    "reason_code": "missing_authoritative_evidence",
+                    "message": "Tail profile is not verified.",
+                }
+            ],
+            "gates": [],
+        },
+    )
+    tool_names = {"mesh_inspect", "macro_adjust_segment_chain_arc", "scene_view_diagnostics"}
+
+    blocked_visible = set(materialize_visible_tool_names(tool_names, blocked_rules))
+    profile_visible = set(materialize_visible_tool_names(tool_names, profile_rules))
+
+    assert "mesh_inspect" not in blocked_visible
+    assert "macro_adjust_segment_chain_arc" not in blocked_visible
+    assert "mesh_inspect" in profile_visible
+    assert "macro_adjust_segment_chain_arc" in profile_visible
+
+
+def test_symmetry_gate_visibility_exposes_bounded_symmetry_tools():
+    rules = build_visibility_rules(
+        "llm-guided",
+        SessionPhase.BUILD,
+        guided_handoff={
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": ["modeling_create_primitive"],
+            "supporting_tools": ["reference_iterate_stage_checkpoint", "router_get_status"],
+        },
+        guided_flow_state={
+            "flow_id": "guided_creature_flow",
+            "domain_profile": "creature",
+            "current_step": "place_secondary_parts",
+        },
+        gate_plan={
+            "plan_id": "creature_quality_gate_plan",
+            "domain_profile": "creature",
+            "completion_blockers": [
+                {
+                    "gate_id": "ear_pair_symmetry",
+                    "gate_type": "symmetry_pair",
+                    "label": "ear pair stays symmetric",
+                    "status": "failed",
+                    "reason_code": "relation_asymmetric",
+                    "recommended_bounded_tools": [
+                        "scene_relation_graph",
+                        "scene_assert_symmetry",
+                        "macro_place_symmetry_pair",
+                    ],
+                    "message": "Ear pair is asymmetric.",
+                }
+            ],
+            "gates": [],
+        },
+    )
+
+    names = set(
+        materialize_visible_tool_names(
+            {
+                "modeling_create_primitive",
+                "reference_iterate_stage_checkpoint",
+                "router_get_status",
+                "scene_relation_graph",
+                "scene_assert_symmetry",
+                "macro_place_symmetry_pair",
+            },
+            rules,
+        )
+    )
+
+    assert {"scene_relation_graph", "scene_assert_symmetry", "macro_place_symmetry_pair"} <= names
+
+
+def test_required_part_gate_does_not_reopen_mutating_tools_while_spatial_refresh_is_required():
+    rules = build_visibility_rules(
+        "llm-guided",
+        SessionPhase.BUILD,
+        guided_handoff={
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": ["modeling_create_primitive"],
+            "supporting_tools": ["guided_register_part", "router_get_status"],
+        },
+        guided_flow_state={
+            "flow_id": "guided_creature_flow",
+            "domain_profile": "creature",
+            "current_step": "place_secondary_parts",
+            "spatial_refresh_required": True,
+        },
+        gate_plan={
+            "plan_id": "creature_quality_gate_plan",
+            "domain_profile": "creature",
+            "completion_blockers": [
+                {
+                    "gate_id": "eye_pair_required",
+                    "gate_type": "required_part",
+                    "label": "visible eye pair",
+                    "status": "failed",
+                    "reason_code": "missing_required_part",
+                    "recommended_bounded_tools": ["guided_register_part", "modeling_create_primitive"],
+                    "message": "Visible eye pair is missing.",
+                }
+            ],
+            "gates": [],
+        },
+    )
+
+    names = set(
+        materialize_visible_tool_names(
+            {
+                "guided_register_part",
+                "modeling_create_primitive",
+                "scene_scope_graph",
+                "scene_relation_graph",
+                "scene_view_diagnostics",
+                "reference_iterate_stage_checkpoint",
+            },
+            rules,
+        )
+    )
+
+    assert "guided_register_part" not in names
+    assert "modeling_create_primitive" not in names
+    assert {"scene_scope_graph", "scene_relation_graph", "scene_view_diagnostics"} <= names
+
+
+def test_visibility_rules_can_shape_build_phase_for_creature_handoff():
+    """Creature handoff should narrow build visibility without changing the generic build baseline."""
+
+    rules = build_visibility_rules(
+        "llm-guided",
+        SessionPhase.BUILD,
+        guided_handoff={
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": list(CREATURE_LOW_POLY_BLOCKOUT_DIRECT_TOOLS),
+            "supporting_tools": list(CREATURE_LOW_POLY_BLOCKOUT_SUPPORTING_TOOLS),
+        },
+    )
+
+    build_rule = rules[-1]
+    assert build_rule["names"] == {
+        *CREATURE_LOW_POLY_BLOCKOUT_DIRECT_TOOLS,
+        *CREATURE_LOW_POLY_BLOCKOUT_SUPPORTING_TOOLS,
+    }
+    assert "scene_clean_scene" in build_rule["names"]
+    assert "mesh_randomize" not in build_rule["names"]
+    assert "mesh_create_vertex_group" not in build_rule["names"]
+    assert "macro_finish_form" not in build_rule["names"]
+
+
+def test_visibility_rules_can_gate_build_phase_by_guided_flow_step():
+    """The active guided step should be able to narrow build visibility before free build actions unlock."""
+
+    rules = build_visibility_rules(
+        "llm-guided",
+        SessionPhase.BUILD,
+        guided_handoff={
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": list(CREATURE_LOW_POLY_BLOCKOUT_DIRECT_TOOLS),
+            "supporting_tools": list(CREATURE_LOW_POLY_BLOCKOUT_SUPPORTING_TOOLS),
+        },
+        guided_flow_state={
+            "flow_id": "guided_creature_flow",
+            "domain_profile": "creature",
+            "current_step": "establish_spatial_context",
+        },
+    )
+
+    assert rules[-1]["names"] == set(GUIDED_SPATIAL_CONTEXT_DIRECT_TOOLS)
+    assert "macro_finish_form" not in rules[-1]["names"]
+    assert "modeling_create_primitive" not in rules[-1]["names"]
+    assert "scene_scope_graph" in rules[-1]["names"]
+
+
+def test_visibility_rules_rearm_build_phase_to_spatial_context_when_refresh_required():
+    """Stale guided build sessions should narrow direct build visibility back to spatial refresh tools."""
+
+    rules = build_visibility_rules(
+        "llm-guided",
+        SessionPhase.BUILD,
+        guided_handoff={
+            "kind": "guided_manual_build",
+            "recipe_id": "low_poly_creature_blockout",
+            "direct_tools": list(CREATURE_LOW_POLY_BLOCKOUT_DIRECT_TOOLS),
+            "supporting_tools": list(CREATURE_LOW_POLY_BLOCKOUT_SUPPORTING_TOOLS),
+        },
+        guided_flow_state={
+            "flow_id": "guided_creature_flow",
+            "domain_profile": "creature",
+            "current_step": "place_secondary_parts",
+            "spatial_refresh_required": True,
+        },
+    )
+
+    assert rules[-1]["names"] == set(GUIDED_SPATIAL_CONTEXT_DIRECT_TOOLS)
+    assert "modeling_create_primitive" not in rules[-1]["names"]
+    assert "guided_register_part" not in rules[-1]["names"]
+    assert "scene_view_diagnostics" in rules[-1]["names"]
+
+
+def test_llm_guided_surface_materializes_visibility_transforms():
+    """llm-guided should carry concrete visibility transforms while legacy-flat stays unfiltered."""
+
+    guided_transforms = materialize_transforms(get_surface_profile("llm-guided"))
+    manual_transforms = materialize_transforms(get_surface_profile("legacy-manual"))
+    legacy_transforms = materialize_transforms(get_surface_profile("legacy-flat"))
+
+    assert len(guided_transforms) == 10
+    assert len(manual_transforms) == 1
+    assert len(legacy_transforms) == 1
+
+
+def test_guided_tool_family_mapping_resolves_shared_family_vocabulary():
+    """Shared tool-family mapping should stay deterministic for later execution policy work."""
+
+    assert resolve_guided_tool_family("macro_finish_form") == "finish"
+    assert resolve_guided_tool_family("reference_iterate_stage_checkpoint") == "checkpoint_iterate"
+    assert resolve_guided_tool_family("modeling_create_primitive") == "primary_masses"
+    assert resolve_guided_tool_family("scene_clean_scene") == "utility"
+
+
+def test_guided_overlay_family_order_can_differ_by_domain_profile():
+    """Overlay family order should remain shared-but-configurable across guided domains."""
+
+    creature = get_guided_overlay_family_order("creature")
+    building = get_guided_overlay_family_order("building")
+
+    assert "attachment_alignment" in creature
+    assert "attachment_alignment" not in building
+    assert creature.index("primary_masses") < creature.index("secondary_parts")
+    assert building.index("primary_masses") < building.index("secondary_parts")

@@ -1,0 +1,205 @@
+name: Release & Publish
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      manual_tag:
+        description: 'Tag to build (e.g. v2.1.0). Leave empty to use latest.'
+        required: false
+        default: 'latest'
+      skip_release:
+        description: 'Skip release job and only build Docker images'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build-and-test:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.skip_release == false)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Run Pre-commit Checks
+        run: poetry run pre-commit run --all-files --show-diff-on-failure
+
+      - name: Run Unit Tests
+        run: poetry run pytest tests/unit/ -v
+
+      - name: Build Addon Zip
+        run: python scripts/build_addon.py
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-addon
+          path: outputs/blender_ai_mcp.zip
+
+  release:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.skip_release == false)
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0 # Important for semantic-release
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: blender-addon
+          path: dist/
+
+      - name: Python Semantic Release
+        id: semantic-release
+        uses: python-semantic-release/python-semantic-release@master
+        with:
+          root_options: -vv
+          github_token: ${{ steps.app-token.outputs.token }}
+
+  docker:
+    needs: release
+    if: always() && ((github.event_name == 'push' && needs.release.result == 'success') || (github.event_name == 'workflow_dispatch' && (needs.release.result == 'success' || needs.release.result == 'skipped')))
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout Tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            TAG="${{ inputs.manual_tag }}"
+            echo "Manual mode. Tag: $TAG"
+            if [ "$TAG" != "latest" ]; then
+               git checkout "$TAG"
+            fi
+            echo "DOCKER_TAG=$TAG" >> $GITHUB_ENV
+          else
+            git pull origin main
+            latest_tag=$(git describe --tags --abbrev=0)
+            echo "Automatic mode. Latest tag: $latest_tag"
+            git checkout $latest_tag
+            echo "DOCKER_TAG=$latest_tag" >> $GITHUB_ENV
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.PAT }}
+
+      - name: Set image name lowercase
+        run: echo "IMAGE_NAME=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-merge:
+    needs: docker
+    if: always() && needs.docker.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Docker Tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "DOCKER_TAG=${{ inputs.manual_tag }}" >> $GITHUB_ENV
+          else
+            git pull origin main
+            latest_tag=$(git describe --tags --abbrev=0)
+            echo "DOCKER_TAG=$latest_tag" >> $GITHUB_ENV
+          fi
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.PAT }}
+
+      - name: Set image name lowercase
+        run: echo "IMAGE_NAME=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          # Create and push manifest for version tag
+          docker buildx imagetools create \
+            -t "${{ env.IMAGE_NAME }}:${{ env.DOCKER_TAG }}" \
+            -t "${{ env.IMAGE_NAME }}:latest" \
+            $(printf "${{ env.IMAGE_NAME }}@sha256:%s " *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect "${{ env.IMAGE_NAME }}:${{ env.DOCKER_TAG }}"

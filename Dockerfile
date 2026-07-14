@@ -1,0 +1,56 @@
+# Use an official Python runtime as a parent image
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.source=https://github.com/PatrykIti/blender-ai-mcp
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install system dependencies (if any)
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry (latest version via official installer, same as CI)
+ENV PIP_NO_CACHE_DIR=1
+RUN pip install --no-cache-dir pipx && \
+    pipx install poetry && \
+    pipx ensurepath
+ENV PATH="/root/.local/bin:$PATH"
+
+# Copy metadata needed by Poetry (it validates referenced files)
+COPY pyproject.toml poetry.lock* README.md LICENSE.md /app/
+
+# Config poetry to not use virtualenvs (we are in docker)
+RUN poetry config virtualenvs.create false
+
+# Install main runtime dependencies only.
+# Pillow is intentionally part of main dependencies because deterministic
+# silhouette analysis is part of the external guided compare path too.
+RUN poetry install --no-interaction --no-ansi --no-root --only main
+
+# Pre-download LaBSE model for fast router startup (~1.2GB)
+# This avoids 60-70s download delay on every container start
+ENV HF_HOME=/app/.cache/huggingface
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/LaBSE')"
+
+# Copy the rest of the application
+COPY server /app/server
+COPY _docs/_PROMPTS /app/_docs/_PROMPTS
+
+# Pre-compute tool/workflow embeddings and store in LanceDB
+# This avoids ~30s embedding computation on every container start
+# Cache is stored in /root/.cache/blender-ai-mcp/vector_store
+RUN python -m server.scripts.precompute_embeddings
+
+# Set environment variables
+# For Docker -> Host communication on Mac/Windows, use host.docker.internal
+# On Linux, use --network host or the host IP
+ENV BLENDER_RPC_HOST=host.docker.internal
+ENV BLENDER_RPC_PORT=8765
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Run the server
+CMD ["python", "-m", "server.main"]

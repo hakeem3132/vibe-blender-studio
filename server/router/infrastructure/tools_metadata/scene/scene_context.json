@@ -1,0 +1,19 @@
+{
+  "tool_name": "scene_context",
+  "category": "scene",
+  "mode_required": "ANY",
+  "selection_required": false,
+  "keywords": ["context", "mode", "selection", "state", "status", "preflight", "verify"],
+  "sample_prompts": [
+    "what mode am I in",
+    "what is selected right now",
+    "check mode before editing",
+    "verify selection before the next modeling step"
+  ],
+  "parameters": {
+    "action": {"type": "enum", "options": ["mode", "selection"], "required": true}
+  },
+  "related_tools": ["scene_list_objects", "scene_inspect"],
+  "patterns": [],
+  "description": "Quick grouped preflight queries for Blender mode and selection state before a modeling or verification step."
+}

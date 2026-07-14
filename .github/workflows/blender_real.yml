@@ -1,0 +1,68 @@
+name: Real Blender Animation Beta
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  offline-dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build locked wheel-only dependency artifact
+        run: |
+          python -m pip install packaging==26.2
+          python scripts/build_wheelhouse.py --profile development --refresh
+          python scripts/verify_wheelhouse.py .runtime/wheelhouse/development --profile development
+      - uses: actions/upload-artifact@v4
+        with:
+          name: locked-wheels-linux-cp312
+          path: .runtime/wheelhouse/development/
+          retention-days: 14
+
+  blender-real:
+    needs: offline-dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: locked-wheels-linux-cp312
+          path: .runtime/wheelhouse/development
+      - name: Install with no package index
+        run: |
+          python scripts/install_offline.py .runtime/wheelhouse/development .venv-ci --profile development
+          .venv-ci/bin/python scripts/test_clean_install.py .runtime/wheelhouse/development --profile development
+      - uses: actions/cache@v4
+        with:
+          path: .runtime/blender
+          key: blender-4.2.15-linux-x64-b9dcc1d06861529779e7faf8d82c9dd3563443dfb1eb14212424c8c40b77074e
+      - name: Install pinned Blender
+        run: |
+          BLENDER_PATH="$(scripts/install_blender_ci.sh | tail -n 1)"
+          echo "BLENDER_PATH=$BLENDER_PATH" >> "$GITHUB_ENV"
+      - name: Build add-on
+        run: .venv-ci/bin/python scripts/build_addon.py
+      - name: Run Foundation acceptance
+        run: .venv-ci/bin/python scripts/run_blender_tests.py
+      - name: Run Milestone 2 acceptance
+        run: .venv-ci/bin/python scripts/run_milestone2_tests.py
+      - name: Run real background render acceptance
+        run: .venv-ci/bin/python scripts/run_background_render_tests.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blender-animation-beta-evidence
+          path: |
+            outputs/blender_real/**
+            outputs/milestone2_1/**
+            outputs/blender_ai_mcp.zip
